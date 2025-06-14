@@ -2,8 +2,8 @@
 
 // Use the robust, WebAssembly-based libraries for decompression
 // with the CORRECT package names and CORRECT import syntax.
-import brotliDecompress from '@jsquash/brotli-decode';
-import gzipDecompress from '@jsquash/gzip-decompress';
+import brotliDecompress from '@jsquash/brotli';
+import gzipDecompress from '@jsquash/gzip';
 
 export default async function handler(request, response) {
   // Always set CORS headers first to guarantee they are always sent.
