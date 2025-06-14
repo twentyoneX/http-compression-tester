@@ -1,1 +1,6 @@
-{}
+{
+  "dependencies": {
+    "@jsquash/brotli": "^2.1.0",
+    "@jsquash/gzip": "^2.1.0"
+  }
+}
