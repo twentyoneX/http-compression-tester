@@ -3,19 +3,17 @@
 import zlib from 'zlib';
 import { promisify } from 'util';
 import iltorb from 'iltorb';
-// ===================================================================
-// THE DEFINITIVE FIX: Using 'axios' for robust networking
-// ===================================================================
-import axios from 'axios';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
 
 export default async function handler(request, response) {
+  // Set CORS Headers first, ensuring they are always sent
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
+  // Handle pre-flight OPTIONS requests
   if (request.method === 'OPTIONS') {
     return response.status(200).end();
   }
@@ -33,24 +31,20 @@ export default async function handler(request, response) {
   }
 
   try {
-    // Replace the 'fetch' call with a more robust 'axios' call
-    const axiosResponse = await axios.get(targetUrl, {
+    // Reverting to the stable, built-in 'fetch' client
+    const fetchResponse = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      // Tell axios to give us the response body as a raw buffer
-      responseType: 'arraybuffer',
-      // Axios follows redirects by default, which is what we want
+      redirect: 'follow', // Automatically follows redirects
     });
-    
-    // Axios provides the final URL after redirects here
-    const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
-    const headers = axiosResponse.headers;
-    const contentEncoding = headers['content-encoding'];
-    
-    // The response body is already a Buffer
-    const bodyBuffer = axiosResponse.data;
+
+    const finalUrl = fetchResponse.url;
+    const headers = fetchResponse.headers;
+    const contentEncoding = headers.get('content-encoding');
+
+    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
@@ -78,25 +72,18 @@ export default async function handler(request, response) {
 
     const result = {
       url: finalUrl,
-      status: axiosResponse.status,
+      status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
       compressedSize: compressedSize,
       uncompressedSize: uncompressedSize,
-      headers: headers,
+      headers: Object.fromEntries(headers.entries()),
     };
 
     return response.status(200).json(result);
 
   } catch (error) {
-    // Axios puts error details in a different place
-    if (error.response) {
-      console.error("Axios Error Response:", error.response.status, error.response.data.toString());
-    } else if (error.request) {
-      console.error("Axios Error Request:", error.request);
-    } else {
-      console.error("General Error:", error.message);
-    }
+    console.error("Fetch Error:", error.message);
     return response.status(500).json({ error: 'Failed to fetch the URL.', details: error.message });
   }
 }
