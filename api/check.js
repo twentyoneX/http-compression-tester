@@ -2,11 +2,11 @@
 
 import zlib from 'zlib';
 import { promisify } from 'util';
-// Import the new, more robust Brotli library
-import { decompress } from 'brotli';
+import { decompress as brotliDecompress } from 'brotli';
 
-const unzip = promisify(zlib.unzip);
-// We no longer need the built-in brotliDecompress
+// Promisify the specific decompression functions we need
+const gunzip = promisify(zlib.gunzip);
+const inflate = promisify(zlib.inflate); // For 'deflate' encoding
 
 export default async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -49,19 +49,25 @@ export default async function handler(request, response) {
     if (contentEncoding && compressedSize > 0) {
       try {
         let decompressedBuffer;
-        if (contentEncoding.includes('gzip') || contentEncoding.includes('deflate')) {
-          decompressedBuffer = await unzip(bodyBuffer);
+        // ===================================================================
+        // THE FINAL FIX: Using the correct, specific decompression functions
+        // ===================================================================
+        if (contentEncoding.includes('gzip')) {
+          // Use the more robust 'gunzip' for gzip streams
+          decompressedBuffer = await gunzip(bodyBuffer);
         } else if (contentEncoding.includes('br')) {
-          // ===================================================================
-          // THE FINAL FIX: Using the new, better library for Brotli
-          // ===================================================================
-          decompressedBuffer = decompress(bodyBuffer);
+          // Use the third-party library for brotli
+          decompressedBuffer = brotliDecompress(bodyBuffer);
+        } else if (contentEncoding.includes('deflate')) {
+          // Use 'inflate' for deflate streams
+          decompressedBuffer = await inflate(bodyBuffer);
         }
+        
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
         }
       } catch (decompressionError) {
-        console.error("Decompression failed:", decompressionError.message);
+        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
         uncompressedSize = null;
       }
     } else if (compressedSize > 0) {
