@@ -3,9 +3,9 @@
 import zlib from 'zlib';
 import { promisify } from 'util';
 // ===================================================================
-// THE CORRECTED IMPORT STATEMENT
+// THE DEFINITIVE FIX: Using the 'iltorb' native C++ binding
 // ===================================================================
-import { decompress as brotliDecompress } from '@jsquash/brotli-decode';
+import iltorb from 'iltorb';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
@@ -44,7 +44,7 @@ export default async function handler(request, response) {
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
 
-    const bodyBuffer = await fetchResponse.arrayBuffer();
+    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
@@ -52,11 +52,12 @@ export default async function handler(request, response) {
       try {
         let decompressedBuffer;
         if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gunzip(Buffer.from(bodyBuffer));
+          decompressedBuffer = await gunzip(bodyBuffer);
         } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(new Uint8Array(bodyBuffer));
+          // Use the native Brotli library which returns a promise
+          decompressedBuffer = await iltorb.decompress(bodyBuffer);
         } else if (contentEncoding.includes('deflate')) {
-          decompressedBuffer = await inflate(Buffer.from(bodyBuffer));
+          decompressedBuffer = await inflate(bodyBuffer);
         }
         
         if (decompressedBuffer) {
