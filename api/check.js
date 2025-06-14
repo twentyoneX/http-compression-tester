@@ -1,9 +1,9 @@
 // /api/check.js
 
 // Use the robust, WebAssembly-based libraries for decompression
-import { decompress as brotliDecompress } from '@jsquash/brotli-decode';
-import { decompress as gzipDecompress } from '@jsquash/gzip-decompress';
-// We no longer need the built-in zlib module
+// with the CORRECT package names
+import { decompress as brotliDecompress } from '@jsquash/brotli';
+import { decompress as gzipDecompress } from '@jsquash/gzip';
 
 export default async function handler(request, response) {
   // Always set CORS headers first to guarantee they are always sent.
@@ -69,7 +69,6 @@ export default async function handler(request, response) {
         } else if (contentEncoding.includes('br')) {
           decompressedBuffer = await brotliDecompress(bodyUint8Array);
         }
-        // Note: 'deflate' is rare and zlib's is usually fine, but we remove it for simplicity and focus on the main two.
         
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
