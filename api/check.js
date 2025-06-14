@@ -1,13 +1,12 @@
 // /api/check.js
 
-import zlib from 'zlib';
-import { promisify } from 'util';
-
-const gunzip = promisify(zlib.gunzip);
-const inflate = promisify(zlib.inflate);
-const brotliDecompress = promisify(zlib.brotliDecompress);
+// Use the robust, WebAssembly-based libraries for decompression
+// with the CORRECT package names and CORRECT 'default export' import syntax.
+import brotliDecompress from '@jsquash/brotli';
+import gzipDecompress from '@jsquash/gzip';
 
 export default async function handler(request, response) {
+  // Always set CORS headers first to guarantee they are always sent.
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -16,6 +15,7 @@ export default async function handler(request, response) {
     return response.status(200).end();
   }
 
+  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
     const { url } = request.query;
     if (!url) {
@@ -25,17 +25,17 @@ export default async function handler(request, response) {
     let targetUrl;
     try {
       targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch {
+    } catch (e) {
       return response.status(400).json({ error: 'Invalid URL provided.' });
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
 
     const fetchResponse = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
       },
       redirect: 'follow',
@@ -44,77 +44,64 @@ export default async function handler(request, response) {
     clearTimeout(timeoutId);
 
     if (!fetchResponse.ok) {
-      return response.status(400).json({
-        error: 'Failed to access the page.',
-        details: `The server responded with status: ${fetchResponse.status}.`,
-      });
+      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
+      if (fetchResponse.status === 403) {
+        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
+      }
+      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
     }
 
+    const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
-    const contentLengthHeader = headers.get('content-length');
-    const finalUrl = fetchResponse.url;
 
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
-    let compressedSize = bodyBuffer.byteLength;
-    if (contentLengthHeader && !isNaN(contentLengthHeader)) {
-      const parsedLength = parseInt(contentLengthHeader, 10);
-      if (parsedLength > 0 && parsedLength < compressedSize) {
-        compressedSize = parsedLength;
-      }
-    }
-
+    const bodyBuffer = await fetchResponse.arrayBuffer();
+    const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
-    let decompressionSuccess = false;
 
     if (contentEncoding && compressedSize > 0) {
       try {
         let decompressedBuffer;
+        const bodyUint8Array = new Uint8Array(bodyBuffer);
+
         if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gunzip(bodyBuffer);
+          // The @jsquash/gzip library's main export is the decompress function
+          decompressedBuffer = await gzipDecompress(bodyUint8Array);
         } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyBuffer);
-        } else if (contentEncoding.includes('deflate')) {
-          decompressedBuffer = await inflate(bodyBuffer);
+          // The @jsquash/brotli library's main export is the decompress function
+          decompressedBuffer = await brotliDecompress(bodyUint8Array);
         }
+        
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
-          decompressionSuccess = true;
         }
-      } catch (err) {
-        console.error(`Decompression failed (${contentEncoding}):`, err.message);
-        uncompressedSize = compressedSize;
+      } catch (decompressionError) {
+        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
+        uncompressedSize = null;
       }
-    } else {
+    } else if (compressedSize > 0) {
       uncompressedSize = compressedSize;
     }
-
-    const savingsPercent =
-      uncompressedSize && uncompressedSize > compressedSize
-        ? Number(((1 - compressedSize / uncompressedSize) * 100).toFixed(1))
-        : 0.0;
 
     const result = {
       url: finalUrl,
       status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
-      compressedSize,
-      uncompressedSize,
-      savingsPercent,
-      decompressionSuccess,
+      compressedSize: compressedSize,
+      uncompressedSize: uncompressedSize,
       headers: Object.fromEntries(headers.entries()),
     };
 
     return response.status(200).json(result);
+
   } catch (error) {
     if (error.name === 'AbortError') {
+      console.error("Request timed out.");
       return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
     }
-
-    return response.status(500).json({
-      error: 'A critical network error occurred.',
-      details: `Could not reach the server. (Error: ${error.cause?.code || error.message})`,
-    });
+    
+    console.error("A critical network error occurred:", error.message);
+    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
