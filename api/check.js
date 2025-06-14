@@ -1,6 +1,5 @@
 // /api/check.js
 
-// Using ONLY built-in Node.js modules for maximum stability.
 import zlib from 'zlib';
 import { promisify } from 'util';
 
@@ -36,7 +35,7 @@ export default async function handler(request, response) {
     const fetchResponse = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
       },
       redirect: 'follow',
@@ -47,71 +46,71 @@ export default async function handler(request, response) {
     if (!fetchResponse.ok) {
       let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
       if (fetchResponse.status === 403) {
-        errorDetail = 'Access Denied (403 Forbidden). The website may be protected by a firewall or CDN.';
+        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service.';
       }
       return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
     }
 
     const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
-    const contentEncoding = headers.get('content-encoding') || '';
+    const contentEncoding = headers.get('content-encoding');
     const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
     const compressedSize = bodyBuffer.byteLength;
 
     let uncompressedSize = null;
-    let savingsPercent = null;
-    let decompressionNote = null;
     let decompressionSuccess = false;
 
-    try {
-      let decompressedBuffer;
+    if (contentEncoding && compressedSize > 0) {
+      try {
+        let decompressedBuffer;
 
-      if (contentEncoding.includes('gzip')) {
-        decompressedBuffer = await gunzip(bodyBuffer);
-      } else if (contentEncoding.includes('br')) {
-        decompressedBuffer = await brotliDecompress(bodyBuffer);
-      } else if (contentEncoding.includes('deflate')) {
-        decompressedBuffer = await inflate(bodyBuffer);
+        if (contentEncoding.includes('gzip')) {
+          decompressedBuffer = await gunzip(bodyBuffer);
+        } else if (contentEncoding.includes('br')) {
+          decompressedBuffer = await brotliDecompress(bodyBuffer);
+        } else if (contentEncoding.includes('deflate')) {
+          decompressedBuffer = await inflate(bodyBuffer);
+        }
+
+        if (decompressedBuffer) {
+          uncompressedSize = decompressedBuffer.byteLength;
+          decompressionSuccess = true;
+        }
+      } catch (err) {
+        console.error(`Decompression failed for ${contentEncoding}:`, err.message);
       }
-
-      if (decompressedBuffer && decompressedBuffer.byteLength > 0) {
-        uncompressedSize = decompressedBuffer.byteLength;
-        decompressionSuccess = true;
-        savingsPercent = Number(((1 - compressedSize / uncompressedSize) * 100).toFixed(2));
-      } else {
-        decompressionNote = 'Decompressed buffer is empty or undefined.';
-      }
-
-    } catch (err) {
-      decompressionNote = `Failed to decompress using ${contentEncoding}: ${err.message}`;
     }
 
-    if (!uncompressedSize) {
+    // Fallback: assume uncompressed size = compressed size if no decompression
+    if (!uncompressedSize && compressedSize > 0) {
       uncompressedSize = compressedSize;
-      savingsPercent = 0;
     }
 
-    return response.status(200).json({
+    const savingsPercent = uncompressedSize && compressedSize
+      ? parseFloat(((1 - compressedSize / uncompressedSize) * 100).toFixed(1))
+      : 0;
+
+    const result = {
       url: finalUrl,
       status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
-      compressedSize,
-      uncompressedSize,
-      savingsPercent,
+      compressedSize, // in bytes
+      uncompressedSize, // in bytes
+      savingsPercent, // float percentage
       decompressionSuccess,
-      decompressionNote,
       headers: Object.fromEntries(headers.entries()),
-    });
+    };
+
+    return response.status(200).json(result);
 
   } catch (error) {
     if (error.name === 'AbortError') {
-      return response.status(500).json({
-        error: 'Request Timeout',
-        details: 'The server took too long to respond.',
-      });
+      console.error('Request timed out.');
+      return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
     }
 
+    console.error('A critical network error occurred:', error.message);
     return response.status(500).json({
       error: 'A critical network error occurred.',
       details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})`,
