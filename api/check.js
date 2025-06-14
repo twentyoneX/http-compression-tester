@@ -18,7 +18,6 @@ export default async function handler(request, response) {
     return response.status(200).end();
   }
 
-  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
     const { url } = request.query;
     if (!url) {
@@ -32,12 +31,11 @@ export default async function handler(request, response) {
       return response.status(400).json({ error: 'Invalid URL provided.' });
     }
 
-    // CRITICAL TIMEOUT HANDLING: Prevents Vercel from killing the function.
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
 
     const fetchResponse = await fetch(targetUrl, {
-      signal: controller.signal, // Pass the abort signal to fetch
+      signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -45,10 +43,8 @@ export default async function handler(request, response) {
       redirect: 'follow',
     });
 
-    // If fetch completes, clear the timeout
     clearTimeout(timeoutId);
 
-    // CRITICAL ERROR HANDLING: Prevents crashes on 4xx/5xx errors.
     if (!fetchResponse.ok) {
       let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
       if (fetchResponse.status === 403) {
@@ -79,7 +75,6 @@ export default async function handler(request, response) {
           uncompressedSize = decompressedBuffer.byteLength;
         }
       } catch (decompressionError) {
-        // This is now an expected outcome for some sites. We handle it gracefully.
         console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
         uncompressedSize = null;
       }
@@ -87,26 +82,33 @@ export default async function handler(request, response) {
       uncompressedSize = compressedSize;
     }
 
+    const savingsPercent = (uncompressedSize && uncompressedSize > compressedSize)
+      ? Number(((1 - compressedSize / uncompressedSize) * 100).toFixed(2))
+      : null;
+
     const result = {
       url: finalUrl,
       status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
-      compressedSize: compressedSize,
-      uncompressedSize: uncompressedSize,
+      compressedSize,
+      uncompressedSize,
+      savingsPercent,
       headers: Object.fromEntries(headers.entries()),
     };
 
     return response.status(200).json(result);
 
   } catch (error) {
-    // This outer catch handles low-level network errors AND our timeout.
     if (error.name === 'AbortError') {
       console.error("Request timed out.");
       return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
     }
-    
+
     console.error("A critical network error occurred:", error.message);
-    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})` });
+    return response.status(500).json({
+      error: 'A critical network error occurred.',
+      details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})`
+    });
   }
 }
