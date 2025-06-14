@@ -38,7 +38,7 @@ export default async function handler(request, response) {
         'Accept-Encoding': 'gzip, deflate, br',
       },
       responseType: 'arraybuffer',
-      timeout: 15000,
+      timeout: 15000, // 15-second timeout
     });
     
     const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
@@ -88,6 +88,7 @@ export default async function handler(request, response) {
       if (error.response.status === 403) {
          errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
       }
+      // Send a proper JSON response instead of crashing.
       return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
     } else if (error.request) {
       console.error("Axios No Response Error:", error.message);
