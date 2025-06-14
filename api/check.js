@@ -33,7 +33,7 @@ export default async function handler(request, response) {
   try {
     const axiosResponse = await axios.get(targetUrl, {
       headers: {
-        'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
       },
       responseType: 'arraybuffer',
@@ -85,7 +85,7 @@ export default async function handler(request, response) {
       console.error("Axios Error Response:", error.response.status);
       let errorDetail = `The server responded with an error: ${error.response.status}.`;
       if (error.response.status === 403) {
-         errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service (like Cloudflare) that is blocking our tool.';
+         errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
       }
       // Send a proper JSON response instead of crashing.
       return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
