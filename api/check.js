@@ -2,11 +2,11 @@
 
 import zlib from 'zlib';
 import { promisify } from 'util';
-import { decompress as brotliDecompress } from 'brotli';
+// Import the new, WASM-based Brotli library
+import { decompress as brotliDecompress } from '@jsquash/brotli';
 
-// Promisify the specific decompression functions we need
 const gunzip = promisify(zlib.gunzip);
-const inflate = promisify(zlib.inflate); // For 'deflate' encoding
+const inflate = promisify(zlib.inflate);
 
 export default async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -35,32 +35,29 @@ export default async function handler(request, response) {
         'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      redirect: 'follow', // Automatically follows redirects
+      redirect: 'follow',
     });
 
     const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
 
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
+    const bodyBuffer = await fetchResponse.arrayBuffer();
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
     if (contentEncoding && compressedSize > 0) {
       try {
         let decompressedBuffer;
-        // ===================================================================
-        // THE FINAL FIX: Using the correct, specific decompression functions
-        // ===================================================================
         if (contentEncoding.includes('gzip')) {
-          // Use the more robust 'gunzip' for gzip streams
-          decompressedBuffer = await gunzip(bodyBuffer);
+          decompressedBuffer = await gunzip(Buffer.from(bodyBuffer));
         } else if (contentEncoding.includes('br')) {
-          // Use the third-party library for brotli
-          decompressedBuffer = brotliDecompress(bodyBuffer);
+          // ===================================================================
+          // THE FINAL, FINAL FIX: Using the WebAssembly Brotli decoder
+          // ===================================================================
+          decompressedBuffer = await brotliDecompress(new Uint8Array(bodyBuffer));
         } else if (contentEncoding.includes('deflate')) {
-          // Use 'inflate' for deflate streams
-          decompressedBuffer = await inflate(bodyBuffer);
+          decompressedBuffer = await inflate(Buffer.from(bodyBuffer));
         }
         
         if (decompressedBuffer) {
