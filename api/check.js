@@ -2,8 +2,10 @@
 
 import zlib from 'zlib';
 import { promisify } from 'util';
-// Import the new, WASM-based Brotli library
-import { decompress as brotliDecompress } from '@jsquash/brotli';
+// ===================================================================
+// THE CORRECTED IMPORT STATEMENT
+// ===================================================================
+import { decompress as brotliDecompress } from '@jsquash/brotli-decode';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
@@ -52,9 +54,6 @@ export default async function handler(request, response) {
         if (contentEncoding.includes('gzip')) {
           decompressedBuffer = await gunzip(Buffer.from(bodyBuffer));
         } else if (contentEncoding.includes('br')) {
-          // ===================================================================
-          // THE FINAL, FINAL FIX: Using the WebAssembly Brotli decoder
-          // ===================================================================
           decompressedBuffer = await brotliDecompress(new Uint8Array(bodyBuffer));
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(Buffer.from(bodyBuffer));
