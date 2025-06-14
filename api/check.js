@@ -1,68 +1,107 @@
-import axios from 'axios';
-import { brotliDecompress, gunzip, inflate } from 'zlib/promises';
+// /api/check.js
 
-export default async function handler(req, res) {
-  // ✅ Always set CORS headers FIRST
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// Use the robust, WebAssembly-based libraries for decompression
+// with the CORRECT package names and CORRECT 'default export' import syntax.
+import brotliDecompress from '@jsquash/brotli';
+import gzipDecompress from '@jsquash/gzip';
 
-  // ✅ Preflight
-  if (req.method === 'OPTIONS') return res.status(200).end();
+export default async function handler(request, response) {
+  // Always set CORS headers first to guarantee they are always sent.
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  const { url } = req.query;
-  if (!url) {
-    return res.status(400).json({ error: 'Missing "url" query parameter' });
+  if (request.method === 'OPTIONS') {
+    return response.status(200).end();
   }
 
-  let targetUrl;
+  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
-    targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-  } catch {
-    return res.status(400).json({ error: 'Invalid URL format' });
-  }
-
-  try {
-    const axiosResponse = await axios.get(targetUrl, {
-      headers: {
-        'User-Agent': 'Compression-Checker/1.0',
-        'Accept-Encoding': 'gzip, deflate, br',
-      },
-      timeout: 10000,
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      validateStatus: null
-    });
-
-    const encoding = axiosResponse.headers['content-encoding'] || '';
-    const compressedSize = axiosResponse.data.length;
-    let uncompressedSize = null;
-
-    try {
-      let buffer;
-      if (encoding.includes('br')) buffer = await brotliDecompress(axiosResponse.data);
-      else if (encoding.includes('gzip')) buffer = await gunzip(axiosResponse.data);
-      else if (encoding.includes('deflate')) buffer = await inflate(axiosResponse.data);
-      if (buffer) uncompressedSize = buffer.length;
-    } catch (err) {
-      console.warn('Decompression failed:', err.message);
+    const { url } = request.query;
+    if (!url) {
+      return response.status(400).json({ error: 'URL parameter is required.' });
     }
 
-    return res.status(200).json({
-      url: axiosResponse.request.res.responseUrl || targetUrl,
-      status: axiosResponse.status,
-      isCompressed: !!encoding,
-      compressionType: encoding || 'None',
-      compressedSize,
-      uncompressedSize,
-      headers: axiosResponse.headers
+    let targetUrl;
+    try {
+      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
+    } catch (e) {
+      return response.status(400).json({ error: 'Invalid URL provided.' });
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
+
+    const fetchResponse = await fetch(targetUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+      redirect: 'follow',
     });
 
-  } catch (err) {
-    console.error('Request failed:', err.code || err.message);
-    return res.status(500).json({
-      error: 'Fetch failed',
-      details: err.message || 'Unknown error',
-    });
+    clearTimeout(timeoutId);
+
+    if (!fetchResponse.ok) {
+      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
+      if (fetchResponse.status === 403) {
+        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
+      }
+      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
+    }
+
+    const finalUrl = fetchResponse.url;
+    const headers = fetchResponse.headers;
+    const contentEncoding = headers.get('content-encoding');
+
+    const bodyBuffer = await fetchResponse.arrayBuffer();
+    const compressedSize = bodyBuffer.byteLength;
+    let uncompressedSize = null;
+
+    if (contentEncoding && compressedSize > 0) {
+      try {
+        let decompressedBuffer;
+        const bodyUint8Array = new Uint8Array(bodyBuffer);
+
+        if (contentEncoding.includes('gzip')) {
+          // The @jsquash/gzip library's main export is the decompress function
+          decompressedBuffer = await gzipDecompress(bodyUint8Array);
+        } else if (contentEncoding.includes('br')) {
+          // The @jsquash/brotli library's main export is the decompress function
+          decompressedBuffer = await brotliDecompress(bodyUint8Array);
+        }
+        
+        if (decompressedBuffer) {
+          uncompressedSize = decompressedBuffer.byteLength;
+        }
+      } catch (decompressionError) {
+        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
+        uncompressedSize = null;
+      }
+    } else if (compressedSize > 0) {
+      uncompressedSize = compressedSize;
+    }
+
+    const result = {
+      url: finalUrl,
+      status: fetchResponse.status,
+      isCompressed: !!contentEncoding,
+      compressionType: contentEncoding || 'None',
+      compressedSize: compressedSize,
+      uncompressedSize: uncompressedSize,
+      headers: Object.fromEntries(headers.entries()),
+    };
+
+    return response.status(200).json(result);
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error("Request timed out.");
+      return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
+    }
+    
+    console.error("A critical network error occurred:", error.message);
+    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
