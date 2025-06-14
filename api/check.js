@@ -1,105 +1,73 @@
 // /api/check.js
 
-// Use the robust, WebAssembly-based libraries for decompression
-// with the CORRECT package names
-import { decompress as brotliDecompress } from '@jsquash/brotli';
-import { decompress as gzipDecompress } from '@jsquash/gzip';
+import { gunzip, brotliDecompress, inflate } from 'zlib/promises';
+import axios from 'axios';
 
-export default async function handler(request, response) {
-  // Always set CORS headers first to guarantee they are always sent.
-  response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (request.method === 'OPTIONS') {
-    return response.status(200).end();
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
 
-  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
-    const { url } = request.query;
+    const { url } = req.query;
     if (!url) {
-      return response.status(400).json({ error: 'URL parameter is required.' });
+      return res.status(400).json({ error: 'URL parameter is required.' });
     }
 
-    let targetUrl;
-    try {
-      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch (e) {
-      return response.status(400).json({ error: 'Invalid URL provided.' });
-    }
+    const targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
-
-    const fetchResponse = await fetch(targetUrl, {
-      signal: controller.signal,
+    const response = await axios.get(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      redirect: 'follow',
+      timeout: 10000,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: null,
     });
 
-    clearTimeout(timeoutId);
-
-    if (!fetchResponse.ok) {
-      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
-      if (fetchResponse.status === 403) {
-        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
-      }
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
-    }
-
-    const finalUrl = fetchResponse.url;
-    const headers = fetchResponse.headers;
-    const contentEncoding = headers.get('content-encoding');
-
-    const bodyBuffer = await fetchResponse.arrayBuffer();
-    const compressedSize = bodyBuffer.byteLength;
+    const headers = response.headers;
+    const contentEncoding = headers['content-encoding'];
+    const compressedSize = response.data.byteLength;
     let uncompressedSize = null;
 
-    if (contentEncoding && compressedSize > 0) {
-      try {
-        let decompressedBuffer;
-        const bodyUint8Array = new Uint8Array(bodyBuffer);
-
-        if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gzipDecompress(bodyUint8Array);
-        } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyUint8Array);
-        }
-        
-        if (decompressedBuffer) {
-          uncompressedSize = decompressedBuffer.byteLength;
-        }
-      } catch (decompressionError) {
-        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
-        uncompressedSize = null;
+    try {
+      let decompressed;
+      if (contentEncoding?.includes('br')) {
+        decompressed = await brotliDecompress(response.data);
+      } else if (contentEncoding?.includes('gzip')) {
+        decompressed = await gunzip(response.data);
+      } else if (contentEncoding?.includes('deflate')) {
+        decompressed = await inflate(response.data);
       }
-    } else if (compressedSize > 0) {
-      uncompressedSize = compressedSize;
+      if (decompressed) uncompressedSize = decompressed.length;
+    } catch (e) {
+      console.error('Decompression failed:', e.message);
     }
 
-    const result = {
-      url: finalUrl,
-      status: fetchResponse.status,
+    res.status(200).json({
+      url: response.request.res.responseUrl || response.config.url,
+      status: response.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
-      compressedSize: compressedSize,
-      uncompressedSize: uncompressedSize,
-      headers: Object.fromEntries(headers.entries()),
-    };
+      compressedSize,
+      uncompressedSize: uncompressedSize ?? null,
+      headers,
+    });
 
-    return response.status(200).json(result);
-
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      console.error("Request timed out.");
-      return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
+  } catch (err) {
+    console.error('Fetch error:', err.message);
+    if (err.code === 'ECONNABORTED') {
+      return res.status(504).json({ error: 'Timeout', details: 'Request took too long.' });
+    } else if (err.response) {
+      return res.status(400).json({ error: 'HTTP Error', details: err.response.statusText });
+    } else {
+      return res.status(500).json({ error: 'Unknown Error', details: err.message });
     }
-    
-    console.error("A critical network error occurred:", error.message);
-    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
