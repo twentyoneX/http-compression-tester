@@ -2,13 +2,16 @@
 
 import zlib from 'zlib';
 import { promisify } from 'util';
+import axios from 'axios';
+// Import the robust, native C++ Brotli library
 import iltorb from 'iltorb';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
+// We no longer need the built-in brotliDecompress
 
 export default async function handler(request, response) {
-  // Always set CORS headers first to guarantee they are always sent.
+  // Your CORS headers are perfect.
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -17,45 +20,35 @@ export default async function handler(request, response) {
     return response.status(200).end();
   }
 
-  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
+  const { url } = request.query;
+  if (!url) {
+    return response.status(400).json({ error: 'URL parameter is required.' });
+  }
+
+  let targetUrl;
   try {
-    const { url } = request.query;
-    if (!url) {
-      return response.status(400).json({ error: 'URL parameter is required.' });
-    }
+    targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
+  } catch (e) { // Added 'e' to the catch for clarity
+    return response.status(400).json({ error: 'Invalid URL provided.' });
+  }
 
-    let targetUrl;
-    try {
-      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch (e) {
-      return response.status(400).json({ error: 'Invalid URL provided.' });
-    }
-
-    const fetchResponse = await fetch(targetUrl, {
+  try {
+    const axiosResponse = await axios.get(targetUrl, {
       headers: {
+        // Using a more common User-Agent to avoid basic bot detection
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      redirect: 'follow',
+      responseType: 'arraybuffer',
+      timeout: 15000,
     });
 
-    // --- CRITICAL ERROR HANDLING ---
-    // This check prevents the function from crashing on 4xx/5xx errors.
-    if (!fetchResponse.ok) {
-      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
-      if (fetchResponse.status === 403) {
-        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
-      }
-      // This sends a proper JSON error response instead of crashing.
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
-    }
-
-    const finalUrl = fetchResponse.url;
-    const headers = fetchResponse.headers;
-    const contentEncoding = headers.get('content-encoding');
-
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
+    const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
+    const headers = axiosResponse.headers;
+    const contentEncoding = headers['content-encoding'];
+    const bodyBuffer = axiosResponse.data;
     const compressedSize = bodyBuffer.byteLength;
+
     let uncompressedSize = null;
 
     if (contentEncoding && compressedSize > 0) {
@@ -64,6 +57,8 @@ export default async function handler(request, response) {
         if (contentEncoding.includes('gzip')) {
           decompressedBuffer = await gunzip(bodyBuffer);
         } else if (contentEncoding.includes('br')) {
+          // --- THE FINAL CRITICAL FIX ---
+          // Use the robust 'iltorb' library instead of the built-in one
           decompressedBuffer = await iltorb.decompress(bodyBuffer);
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(bodyBuffer);
@@ -71,29 +66,35 @@ export default async function handler(request, response) {
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
         }
-      } catch (decompressionError) {
-        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
+      } catch (e) {
+        console.error(`Decompression failed:`, e.message);
         uncompressedSize = null;
       }
     } else if (compressedSize > 0) {
       uncompressedSize = compressedSize;
     }
 
-    const result = {
+    return response.status(200).json({
       url: finalUrl,
-      status: fetchResponse.status,
+      status: axiosResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
-      compressedSize: compressedSize,
-      uncompressedSize: uncompressedSize,
-      headers: Object.fromEntries(headers.entries()),
-    };
-
-    return response.status(200).json(result);
-
+      compressedSize,
+      uncompressedSize,
+      headers,
+    });
   } catch (error) {
-    // This outer catch handles low-level network errors (e.g., DNS failure, connection refused).
-    console.error("A critical network error occurred:", error.message);
-    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Original error: ${error.cause ? error.cause.code : error.message})` });
+    // Your error handling here is excellent and will prevent crashes.
+    if (error.response) {
+      let msg = `The server responded with ${error.response.status}.`;
+      if (error.response.status === 403) {
+        msg = 'Access Denied (403 Forbidden). This site may be protected by a security service.';
+      }
+      return response.status(400).json({ error: 'Failed to access the page.', details: msg });
+    } else if (error.request) {
+      return response.status(500).json({ error: 'Network Error', details: 'Could not reach the server.' });
+    } else {
+      return response.status(500).json({ error: 'Unexpected Error', details: error.message });
+    }
   }
 }
