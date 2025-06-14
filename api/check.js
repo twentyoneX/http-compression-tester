@@ -2,10 +2,11 @@
 
 import zlib from 'zlib';
 import { promisify } from 'util';
-// ===================================================================
-// THE DEFINITIVE FIX: Using the 'iltorb' native C++ binding
-// ===================================================================
 import iltorb from 'iltorb';
+// ===================================================================
+// THE DEFINITIVE FIX: Using 'axios' for robust networking
+// ===================================================================
+import axios from 'axios';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
@@ -32,19 +33,24 @@ export default async function handler(request, response) {
   }
 
   try {
-    const fetchResponse = await fetch(targetUrl, {
+    // Replace the 'fetch' call with a more robust 'axios' call
+    const axiosResponse = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      redirect: 'follow',
+      // Tell axios to give us the response body as a raw buffer
+      responseType: 'arraybuffer',
+      // Axios follows redirects by default, which is what we want
     });
-
-    const finalUrl = fetchResponse.url;
-    const headers = fetchResponse.headers;
-    const contentEncoding = headers.get('content-encoding');
-
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
+    
+    // Axios provides the final URL after redirects here
+    const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
+    const headers = axiosResponse.headers;
+    const contentEncoding = headers['content-encoding'];
+    
+    // The response body is already a Buffer
+    const bodyBuffer = axiosResponse.data;
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
@@ -54,7 +60,6 @@ export default async function handler(request, response) {
         if (contentEncoding.includes('gzip')) {
           decompressedBuffer = await gunzip(bodyBuffer);
         } else if (contentEncoding.includes('br')) {
-          // Use the native Brotli library which returns a promise
           decompressedBuffer = await iltorb.decompress(bodyBuffer);
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(bodyBuffer);
@@ -73,18 +78,25 @@ export default async function handler(request, response) {
 
     const result = {
       url: finalUrl,
-      status: fetchResponse.status,
+      status: axiosResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
       compressedSize: compressedSize,
       uncompressedSize: uncompressedSize,
-      headers: Object.fromEntries(headers.entries()),
+      headers: headers,
     };
 
     return response.status(200).json(result);
 
   } catch (error) {
-    console.error("Fetch Error:", error);
+    // Axios puts error details in a different place
+    if (error.response) {
+      console.error("Axios Error Response:", error.response.status, error.response.data.toString());
+    } else if (error.request) {
+      console.error("Axios Error Request:", error.request);
+    } else {
+      console.error("General Error:", error.message);
+    }
     return response.status(500).json({ error: 'Failed to fetch the URL.', details: error.message });
   }
 }
