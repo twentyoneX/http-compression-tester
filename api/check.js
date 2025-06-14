@@ -35,50 +35,6 @@ export default async function handler(request, response) {
     const fetchResponse = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
-        'User-api/check.js`
-
-This version uses the stable `fetch` with timeouts, the bulletproof error handling, and the powerful `@jsquash` libraries, imported with the **correct syntax**.
-
-**Action:** If you ever try again, this is the correct `api/check.js`.
-
-```javascript
-// /api/check.js
-
-// Use the robust, WebAssembly-based libraries for decompression
-// with the CORRECT package names and CORRECT 'default export' import syntax.
-import brotliDecompress from '@jsquash/brotli';
-import gzipDecompress from '@jsquash/gzip';
-
-export default async function handler(request, response) {
-  // Always set CORS headers first to guarantee they are always sent.
-  response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (request.method === 'OPTIONS') {
-    return response.status(200).end();
-  }
-
-  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
-  try {
-    const { url } = request.query;
-    if (!url) {
-      return response.status(400).json({ error: 'URL parameter is required.' });
-    }
-
-    let targetUrl;
-    try {
-      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch (e) {
-      return response.status(400).json({ error: 'Invalid URL provided.' });
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
-
-    const fetchResponse = await fetch(targetUrl, {
-      signal: controller.signal,
-      headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
       },
@@ -144,6 +100,6 @@ export default async function handler(request, response) {
     }
     
     console.error("A critical network error occurred:", error.message);
-    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})` });
+    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. (Error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
