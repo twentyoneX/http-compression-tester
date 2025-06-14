@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "@jsquash/brotli-decode": "^2.1.0"
+    "iltorb": "^2.4.5"
   }
 }
