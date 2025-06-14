@@ -1,8 +1,6 @@
 {
-  "name": "compression-check-api",
-  "version": "1.0.0",
-  "type": "module",
   "dependencies": {
-    "axios": "^1.7.2"
+    "@jsquash/brotli": "^2.1.0",
+    "@jsquash/gzip": "^2.1.0"
   }
 }
