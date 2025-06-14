@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "@jsquash/brotli": "^2.1.0"
+    "@jsquash/brotli-decode": "^2.1.0"
   }
 }
