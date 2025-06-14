@@ -28,33 +28,28 @@ export default async function handler(request, response) {
   }
 
   try {
+    // ===================================================================
+    // THE FINAL CHANGE: AUTOMATICALLY FOLLOW REDIRECTS
+    // ===================================================================
     const fetchResponse = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      redirect: 'manual',
+      // Change 'manual' to 'follow' to handle redirects automatically
+      redirect: 'follow', 
     });
 
+    // The 'fetchResponse.url' will now be the FINAL URL after any redirects.
+    const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
 
-    if (fetchResponse.status >= 300 && fetchResponse.status < 400) {
-      return response.status(200).json({
-        url: targetUrl, status: fetchResponse.status, isRedirect: true, redirectLocation: headers.get('location'),
-      });
-    }
-
-    // ===================================================================
-    // NEW ROBUST SIZE CALCULATION
-    // We read the body into a buffer first to get the true size.
-    // ===================================================================
     const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
     if (contentEncoding && compressedSize > 0) {
-      // Content is compressed. Let's decompress it.
       try {
         let decompressedBuffer;
         if (contentEncoding.includes('gzip') || contentEncoding.includes('deflate')) {
@@ -70,13 +65,12 @@ export default async function handler(request, response) {
         uncompressedSize = null;
       }
     } else if (compressedSize > 0) {
-      // Content is not compressed, so size is the same.
       uncompressedSize = compressedSize;
     }
-    // ===================================================================
 
     const result = {
-      url: targetUrl,
+      // Return the final URL so the user knows what was tested
+      url: finalUrl,
       status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
