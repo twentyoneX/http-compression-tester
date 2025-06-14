@@ -1,5 +1,4 @@
 // api/check.js
-
 import zlib from 'zlib';
 import { promisify } from 'util';
 import axios from 'axios';
@@ -8,86 +7,68 @@ const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
 const brotliDecompress = promisify(zlib.brotliDecompress);
 
-export default async function handler(request, response) {
-  response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (request.method === 'OPTIONS') {
-    return response.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { url } = request.query;
-  if (!url) {
-    return response.status(400).json({ error: 'URL parameter is required.' });
-  }
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'URL parameter is required.' });
 
   let targetUrl;
   try {
     targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
   } catch {
-    return response.status(400).json({ error: 'Invalid URL provided.' });
+    return res.status(400).json({ error: 'Invalid URL provided.' });
   }
 
   try {
-    const axiosResponse = await axios.get(targetUrl, {
+    const response = await axios.get(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Encoding': 'br, gzip, deflate',
       },
       responseType: 'arraybuffer',
       timeout: 15000,
+      maxRedirects: 5,
+      validateStatus: null,
     });
 
-    const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
-    const headers = axiosResponse.headers;
-    const contentEncoding = headers['content-encoding'];
-    const bodyBuffer = axiosResponse.data;
-    const compressedSize = bodyBuffer.byteLength;
+    const headers = response.headers;
+    const contentEncoding = headers['content-encoding'] || '';
+    const compressedSize = response.data.byteLength;
 
-    let uncompressedSize = null;
-
-    if (contentEncoding && compressedSize > 0) {
-      try {
-        let decompressedBuffer;
-        if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gunzip(bodyBuffer);
-        } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyBuffer);
-        } else if (contentEncoding.includes('deflate')) {
-          decompressedBuffer = await inflate(bodyBuffer);
-        }
-        if (decompressedBuffer) {
-          uncompressedSize = decompressedBuffer.byteLength;
-        }
-      } catch (e) {
-        console.error(`Decompression failed:`, e.message);
-        uncompressedSize = null;
+    let uncompressedBuffer;
+    try {
+      if (contentEncoding.includes('br')) {
+        uncompressedBuffer = await brotliDecompress(response.data);
+      } else if (contentEncoding.includes('gzip')) {
+        uncompressedBuffer = await gunzip(response.data);
+      } else if (contentEncoding.includes('deflate')) {
+        uncompressedBuffer = await inflate(response.data);
       }
-    } else if (compressedSize > 0) {
-      uncompressedSize = compressedSize;
+    } catch (e) {
+      // Ignore decompression errors for now
+      console.warn("Decompression error:", e.message);
     }
 
-    return response.status(200).json({
-      url: finalUrl,
-      status: axiosResponse.status,
-      isCompressed: !!contentEncoding,
+    const uncompressedSize = uncompressedBuffer ? uncompressedBuffer.byteLength : compressedSize;
+
+    const isCompressed = !!contentEncoding && compressedSize < uncompressedSize;
+
+    return res.status(200).json({
+      url: response.request.res.responseUrl || targetUrl,
+      status: response.status,
+      isCompressed,
       compressionType: contentEncoding || 'None',
       compressedSize,
       uncompressedSize,
       headers,
     });
-  } catch (error) {
-    if (error.response) {
-      let msg = `The server responded with ${error.response.status}`;
-      if (error.response.status === 403) {
-        msg = 'Access Denied (403 Forbidden). This site may be protected.';
-      }
-      return response.status(400).json({ error: 'Failed to access the page.', details: msg });
-    } else if (error.request) {
-      return response.status(500).json({ error: 'Network Error', details: 'Could not reach the server.' });
-    } else {
-      return response.status(500).json({ error: 'Unexpected Error', details: error.message });
-    }
+  } catch (err) {
+    console.error("Fetch error:", err.message);
+    return res.status(500).json({ error: 'Failed to fetch and analyze content.', details: err.message });
   }
 }
