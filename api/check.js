@@ -1,11 +1,9 @@
 // /api/check.js
 
-import zlib from 'zlib';
-import { promisify } from 'util';
-
-const gunzip = promisify(zlib.gunzip);
-const inflate = promisify(zlib.inflate);
-const brotliDecompress = promisify(zlib.brotliDecompress);
+// Use the robust, WebAssembly-based libraries for decompression
+import { decompress as brotliDecompress } from '@jsquash/brotli-decode';
+import { decompress as gzipDecompress } from '@jsquash/gzip-decompress';
+// We no longer need the built-in zlib module
 
 export default async function handler(request, response) {
   // Always set CORS headers first to guarantee they are always sent.
@@ -31,12 +29,11 @@ export default async function handler(request, response) {
       return response.status(400).json({ error: 'Invalid URL provided.' });
     }
 
-    // --- CRITICAL TIMEOUT HANDLING ---
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
 
     const fetchResponse = await fetch(targetUrl, {
-      signal: controller.signal, // Pass the abort signal to fetch
+      signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -44,10 +41,8 @@ export default async function handler(request, response) {
       redirect: 'follow',
     });
 
-    // If fetch completes, clear the timeout
     clearTimeout(timeoutId);
 
-    // --- CRITICAL ERROR HANDLING ---
     if (!fetchResponse.ok) {
       let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
       if (fetchResponse.status === 403) {
@@ -60,21 +55,25 @@ export default async function handler(request, response) {
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
 
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
+    const bodyBuffer = await fetchResponse.arrayBuffer();
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
     if (contentEncoding && compressedSize > 0) {
       try {
         let decompressedBuffer;
+        const bodyUint8Array = new Uint8Array(bodyBuffer);
+
         if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gunzip(bodyBuffer);
+          decompressedBuffer = await gzipDecompress(bodyUint8Array);
         } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyBuffer);
-        } else if (contentEncoding.includes('deflate')) {
-          decompressedBuffer = await inflate(bodyBuffer);
+          decompressedBuffer = await brotliDecompress(bodyUint8Array);
         }
-        if (decompressedBuffer) { uncompressedSize = decompressedBuffer.byteLength; }
+        // Note: 'deflate' is rare and zlib's is usually fine, but we remove it for simplicity and focus on the main two.
+        
+        if (decompressedBuffer) {
+          uncompressedSize = decompressedBuffer.byteLength;
+        }
       } catch (decompressionError) {
         console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
         uncompressedSize = null;
@@ -96,7 +95,6 @@ export default async function handler(request, response) {
     return response.status(200).json(result);
 
   } catch (error) {
-    // This outer catch handles low-level network errors AND our timeout.
     if (error.name === 'AbortError') {
       console.error("Request timed out.");
       return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
