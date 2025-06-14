@@ -1,4 +1,5 @@
-// api/check.js
+// /api/check.js
+
 import zlib from 'zlib';
 import { promisify } from 'util';
 import axios from 'axios';
@@ -25,50 +26,51 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await axios.get(targetUrl, {
+    const axiosResponse = await axios.get(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept-Encoding': 'br, gzip, deflate',
+        'User-Agent': 'Compression-Checker',
+        'Accept-Encoding': 'gzip, deflate, br'
       },
       responseType: 'arraybuffer',
-      timeout: 15000,
-      maxRedirects: 5,
-      validateStatus: null,
+      timeout: 10000
     });
 
-    const headers = response.headers;
-    const contentEncoding = headers['content-encoding'] || '';
-    const compressedSize = response.data.byteLength;
+    const contentEncoding = axiosResponse.headers['content-encoding'] || '';
+    const compressedBuffer = axiosResponse.data;
+    const compressedSize = compressedBuffer.byteLength;
+    let uncompressedSize = null;
 
     let uncompressedBuffer;
+
     try {
       if (contentEncoding.includes('br')) {
-        uncompressedBuffer = await brotliDecompress(response.data);
+        uncompressedBuffer = await brotliDecompress(compressedBuffer);
       } else if (contentEncoding.includes('gzip')) {
-        uncompressedBuffer = await gunzip(response.data);
+        uncompressedBuffer = await gunzip(compressedBuffer);
       } else if (contentEncoding.includes('deflate')) {
-        uncompressedBuffer = await inflate(response.data);
+        uncompressedBuffer = await inflate(compressedBuffer);
       }
     } catch (e) {
-      // Ignore decompression errors for now
-      console.warn("Decompression error:", e.message);
+      console.warn(`Failed to decompress: ${e.message}`);
     }
 
-    const uncompressedSize = uncompressedBuffer ? uncompressedBuffer.byteLength : compressedSize;
+    if (uncompressedBuffer) {
+      uncompressedSize = uncompressedBuffer.byteLength;
+    } else {
+      uncompressedSize = compressedSize;
+    }
 
     const isCompressed = !!contentEncoding && compressedSize < uncompressedSize;
 
     return res.status(200).json({
-      url: response.request.res.responseUrl || targetUrl,
-      status: response.status,
+      url: axiosResponse.request.res.responseUrl || targetUrl,
+      status: axiosResponse.status,
       isCompressed,
       compressionType: contentEncoding || 'None',
       compressedSize,
       uncompressedSize,
-      headers,
+      headers: axiosResponse.headers
     });
   } catch (err) {
-    console.error("Fetch error:", err.message);
-    return res.status(500).json({ error: 'Failed to fetch and analyze content.', details: err.message });
-  }
-}
+    console.error('Request failed:', err.message);
+    return res.status(500).json({ error: 'Failed to check compression', details: err.m
