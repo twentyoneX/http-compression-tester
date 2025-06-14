@@ -1,20 +1,19 @@
-// /api/check.js
-
 import zlib from 'zlib';
 import { promisify } from 'util';
 import axios from 'axios';
 
-// Use only the built-in, stable zlib module for all decompression
+// Promisify the zlib decompression methods
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
 const brotliDecompress = promisify(zlib.brotliDecompress);
 
 export default async function handler(request, response) {
-  // Always set CORS headers first to guarantee they are always sent.
+  // Set CORS headers
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
+  // Handle preflight requests
   if (request.method === 'OPTIONS') {
     return response.status(200).end();
   }
@@ -27,7 +26,7 @@ export default async function handler(request, response) {
   let targetUrl;
   try {
     targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-  } catch (e) {
+  } catch (error) {
     return response.status(400).json({ error: 'Invalid URL provided.' });
   }
 
@@ -38,13 +37,12 @@ export default async function handler(request, response) {
         'Accept-Encoding': 'gzip, deflate, br',
       },
       responseType: 'arraybuffer',
-      timeout: 15000, // 15-second timeout
+      timeout: 15000,
     });
-    
+
     const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
     const headers = axiosResponse.headers;
     const contentEncoding = headers['content-encoding'];
-    
     const bodyBuffer = axiosResponse.data;
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
@@ -59,10 +57,11 @@ export default async function handler(request, response) {
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(bodyBuffer);
         }
-        if (decompressedBuffer) { uncompressedSize = decompressedBuffer.byteLength; }
+        if (decompressedBuffer) {
+          uncompressedSize = decompressedBuffer.byteLength;
+        }
       } catch (decompressionError) {
         console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
-        uncompressedSize = null;
       }
     } else if (compressedSize > 0) {
       uncompressedSize = compressedSize;
@@ -79,16 +78,13 @@ export default async function handler(request, response) {
     };
 
     return response.status(200).json(result);
-
   } catch (error) {
-    // This bulletproof error handling prevents the function from crashing.
     if (error.response) {
       console.error("Axios Error Response:", error.response.status);
       let errorDetail = `The server responded with an error: ${error.response.status}.`;
       if (error.response.status === 403) {
-         errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
+        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
       }
-      // Send a proper JSON response instead of crashing.
       return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
     } else if (error.request) {
       console.error("Axios No Response Error:", error.message);
