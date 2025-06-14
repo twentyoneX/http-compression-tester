@@ -3,7 +3,6 @@
 import zlib from 'zlib';
 import { promisify } from 'util';
 import iltorb from 'iltorb';
-import axios from 'axios';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
@@ -18,33 +17,44 @@ export default async function handler(request, response) {
     return response.status(200).end();
   }
 
-  const { url } = request.query;
-  if (!url) {
-    return response.status(400).json({ error: 'URL parameter is required.' });
-  }
-
-  let targetUrl;
+  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
-    targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-  } catch (e) {
-    return response.status(400).json({ error: 'Invalid URL provided.' });
-  }
+    const { url } = request.query;
+    if (!url) {
+      return response.status(400).json({ error: 'URL parameter is required.' });
+    }
 
-  try {
-    const axiosResponse = await axios.get(targetUrl, {
+    let targetUrl;
+    try {
+      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
+    } catch (e) {
+      return response.status(400).json({ error: 'Invalid URL provided.' });
+    }
+
+    const fetchResponse = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      responseType: 'arraybuffer',
-      timeout: 15000,
+      redirect: 'follow',
     });
-    
-    const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
-    const headers = axiosResponse.headers;
-    const contentEncoding = headers['content-encoding'];
-    
-    const bodyBuffer = axiosResponse.data;
+
+    // --- CRITICAL ERROR HANDLING ---
+    // This check prevents the function from crashing on 4xx/5xx errors.
+    if (!fetchResponse.ok) {
+      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
+      if (fetchResponse.status === 403) {
+        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
+      }
+      // This sends a proper JSON error response instead of crashing.
+      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
+    }
+
+    const finalUrl = fetchResponse.url;
+    const headers = fetchResponse.headers;
+    const contentEncoding = headers.get('content-encoding');
+
+    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
@@ -58,7 +68,9 @@ export default async function handler(request, response) {
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(bodyBuffer);
         }
-        if (decompressedBuffer) { uncompressedSize = decompressedBuffer.byteLength; }
+        if (decompressedBuffer) {
+          uncompressedSize = decompressedBuffer.byteLength;
+        }
       } catch (decompressionError) {
         console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
         uncompressedSize = null;
@@ -69,31 +81,19 @@ export default async function handler(request, response) {
 
     const result = {
       url: finalUrl,
-      status: axiosResponse.status,
+      status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
       compressedSize: compressedSize,
       uncompressedSize: uncompressedSize,
-      headers: headers,
+      headers: Object.fromEntries(headers.entries()),
     };
 
     return response.status(200).json(result);
 
   } catch (error) {
-    // This bulletproof error handling prevents the function from crashing.
-    if (error.response) {
-      console.error("Axios Error Response:", error.response.status);
-      let errorDetail = `The server responded with an error: ${error.response.status}.`;
-      if (error.response.status === 403) {
-         errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service (like Cloudflare) that is blocking our tool.';
-      }
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
-    } else if (error.request) {
-      console.error("Axios No Response Error:", error.message);
-      return response.status(500).json({ error: 'Network Error', details: 'Could not connect to the server. The site may be offline or unreachable.' });
-    } else {
-      console.error("General Error:", error.message);
-      return response.status(500).json({ error: 'An Unexpected Error Occurred', details: error.message });
-    }
+    // This outer catch handles low-level network errors (e.g., DNS failure, connection refused).
+    console.error("A critical network error occurred:", error.message);
+    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Original error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
