@@ -3,49 +3,59 @@
 import zlib from 'zlib';
 import { promisify } from 'util';
 import iltorb from 'iltorb';
-import axios from 'axios';
 
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
 
 export default async function handler(request, response) {
-  // Set CORS Headers first, ensuring they are always sent
+  // Always set CORS headers first to guarantee they are sent.
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
+  // Handle pre-flight OPTIONS requests.
   if (request.method === 'OPTIONS') {
     return response.status(200).end();
   }
 
-  const { url } = request.query;
-  if (!url) {
-    return response.status(400).json({ error: 'URL parameter is required.' });
-  }
-
-  let targetUrl;
+  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
-    targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-  } catch (e) {
-    return response.status(400).json({ error: 'Invalid URL provided.' });
-  }
+    const { url } = request.query;
+    if (!url) {
+      return response.status(400).json({ error: 'URL parameter is required.' });
+    }
 
-  try {
-    const axiosResponse = await axios.get(targetUrl, {
+    let targetUrl;
+    try {
+      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
+    } catch (e) {
+      return response.status(400).json({ error: 'Invalid URL provided.' });
+    }
+
+    const fetchResponse = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0',
+        'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      responseType: 'arraybuffer',
-      // Add a generous timeout to prevent hangs
-      timeout: 15000, 
+      redirect: 'follow',
     });
-    
-    const finalUrl = axiosResponse.request.res.responseUrl || axiosResponse.config.url;
-    const headers = axiosResponse.headers;
-    const contentEncoding = headers['content-encoding'];
-    
-    const bodyBuffer = axiosResponse.data;
+
+    // --- CRITICAL ERROR HANDLING ---
+    // Check if the request was successful (status 200-299) BEFORE processing.
+    if (!fetchResponse.ok) {
+      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
+      if (fetchResponse.status === 403) {
+        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
+      }
+      // This sends a proper JSON error response instead of crashing.
+      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
+    }
+
+    const finalUrl = fetchResponse.url;
+    const headers = fetchResponse.headers;
+    const contentEncoding = headers.get('content-encoding');
+
+    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
 
@@ -59,7 +69,9 @@ export default async function handler(request, response) {
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(bodyBuffer);
         }
-        if (decompressedBuffer) { uncompressedSize = decompressedBuffer.byteLength; }
+        if (decompressedBuffer) {
+          uncompressedSize = decompressedBuffer.byteLength;
+        }
       } catch (decompressionError) {
         console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
         uncompressedSize = null;
@@ -70,49 +82,19 @@ export default async function handler(request, response) {
 
     const result = {
       url: finalUrl,
-      status: axiosResponse.status,
+      status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
       compressedSize: compressedSize,
       uncompressedSize: uncompressedSize,
-      headers: headers,
+      headers: Object.fromEntries(headers.entries()),
     };
 
     return response.status(200).json(result);
 
   } catch (error) {
-    // ===================================================================
-    // THE DEFINITIVE FIX: Robust error handling for blocked requests
-    // ===================================================================
-    if (error.response) {
-      // The server responded with an error status (e.g., 403, 404, 500)
-      console.error("Axios Error Response:", error.response.status);
-      if (error.response.status === 403) {
-         // Specifically handle "Forbidden" errors from security services
-         return response.status(403).json({ 
-           error: 'Access Denied (403 Forbidden)', 
-           details: 'The website is protected by a security service (like Cloudflare) that is blocking automated tools. This is not an error with our tool.' 
-         });
-      }
-      // Handle other server errors
-      return response.status(error.response.status).json({ 
-        error: `Server Error (${error.response.status})`, 
-        details: 'The server responded with an error.'
-      });
-    } else if (error.request) {
-      // The request was made but no response was received (e.g., timeout)
-      console.error("Axios No Response Error:", error.message);
-      return response.status(500).json({ 
-        error: 'Network Error', 
-        details: 'Could not connect to the server. The site may be offline or unreachable.' 
-      });
-    } else {
-      // Something else went wrong
-      console.error("General Error:", error.message);
-      return response.status(500).json({ 
-        error: 'An Unexpected Error Occurred', 
-        details: error.message 
-      });
-    }
+    // This outer catch handles low-level network errors (e.g. DNS failure, connection refused).
+    console.error("A critical network error occurred:", error.message);
+    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Original error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
