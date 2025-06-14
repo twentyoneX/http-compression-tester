@@ -1,6 +1,3 @@
-// /api/check.js
-
-// Using ONLY built-in Node.js modules for maximum stability.
 import zlib from 'zlib';
 import { promisify } from 'util';
 
@@ -9,7 +6,6 @@ const inflate = promisify(zlib.inflate);
 const brotliDecompress = promisify(zlib.brotliDecompress);
 
 export default async function handler(request, response) {
-  // Always set CORS headers first to guarantee they are always sent.
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -27,17 +23,17 @@ export default async function handler(request, response) {
     let targetUrl;
     try {
       targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch (e) {
+    } catch {
       return response.status(400).json({ error: 'Invalid URL provided.' });
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const fetchResponse = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
       redirect: 'follow',
@@ -46,69 +42,69 @@ export default async function handler(request, response) {
     clearTimeout(timeoutId);
 
     if (!fetchResponse.ok) {
-      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
-      if (fetchResponse.status === 403) {
-        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
-      }
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
+      return response.status(400).json({
+        error: 'Failed to access the page.',
+        details: `HTTP ${fetchResponse.status}`,
+      });
     }
 
     const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
-    const contentEncoding = headers.get('content-encoding');
+    const encoding = headers.get('content-encoding') || '';
+    const buffer = Buffer.from(await fetchResponse.arrayBuffer());
+    const compressedSize = buffer.byteLength;
 
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
-    const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
+    let savingsPercent = null;
+    let decompressionNote = null;
 
-    if (contentEncoding && compressedSize > 0) {
-      try {
-        let decompressedBuffer;
-        if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gunzip(bodyBuffer);
-        } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyBuffer);
-        } else if (contentEncoding.includes('deflate')) {
-          decompressedBuffer = await inflate(bodyBuffer);
-        }
-        if (decompressedBuffer) {
-          uncompressedSize = decompressedBuffer.byteLength;
-        }
-      } catch (decompressionError) {
-        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
-        uncompressedSize = null;
+    try {
+      let decompressed;
+
+      if (encoding.includes('gzip')) {
+        decompressed = await gunzip(buffer);
+      } else if (encoding.includes('br')) {
+        decompressed = await brotliDecompress(buffer);
+      } else if (encoding.includes('deflate')) {
+        decompressed = await inflate(buffer);
       }
-    } else if (compressedSize > 0) {
-      uncompressedSize = compressedSize;
+
+      if (decompressed) {
+        uncompressedSize = decompressed.byteLength;
+        savingsPercent = Number(((1 - compressedSize / uncompressedSize) * 100).toFixed(2));
+      } else {
+        decompressionNote = 'Content-Encoding provided but could not decompress.';
+      }
+
+    } catch (err) {
+      console.warn(`Decompression error (${encoding}):`, err.message);
+      decompressionNote = `Decompression failed (${encoding}): ${err.message}`;
     }
 
-    const savingsPercent = (uncompressedSize && uncompressedSize > compressedSize)
-      ? Number(((1 - compressedSize / uncompressedSize) * 100).toFixed(2))
-      : null;
+    if (!uncompressedSize) {
+      uncompressedSize = compressedSize;
+      savingsPercent = 0;
+    }
 
-    const result = {
+    return response.status(200).json({
       url: finalUrl,
       status: fetchResponse.status,
-      isCompressed: !!contentEncoding,
-      compressionType: contentEncoding || 'None',
+      isCompressed: !!encoding,
+      compressionType: encoding || 'None',
       compressedSize,
       uncompressedSize,
       savingsPercent,
       headers: Object.fromEntries(headers.entries()),
-    };
+      decompressionNote,
+    });
 
-    return response.status(200).json(result);
-
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      console.error("Request timed out.");
-      return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return response.status(500).json({ error: 'Request Timeout' });
     }
-
-    console.error("A critical network error occurred:", error.message);
     return response.status(500).json({
-      error: 'A critical network error occurred.',
-      details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})`
+      error: 'Network error',
+      details: err.message,
     });
   }
 }
