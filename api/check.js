@@ -2,9 +2,11 @@
 
 import zlib from 'zlib';
 import { promisify } from 'util';
+// Import the new, more robust Brotli library
+import { decompress } from 'brotli';
 
 const unzip = promisify(zlib.unzip);
-const brotliDecompress = promisify(zlib.brotliDecompress);
+// We no longer need the built-in brotliDecompress
 
 export default async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -28,19 +30,14 @@ export default async function handler(request, response) {
   }
 
   try {
-    // ===================================================================
-    // THE FINAL CHANGE: AUTOMATICALLY FOLLOW REDIRECTS
-    // ===================================================================
     const fetchResponse = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Blogspot-HTTP-Compression-Tester/1.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
-      // Change 'manual' to 'follow' to handle redirects automatically
-      redirect: 'follow', 
+      redirect: 'follow', // Automatically follows redirects
     });
 
-    // The 'fetchResponse.url' will now be the FINAL URL after any redirects.
     const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
@@ -55,7 +52,10 @@ export default async function handler(request, response) {
         if (contentEncoding.includes('gzip') || contentEncoding.includes('deflate')) {
           decompressedBuffer = await unzip(bodyBuffer);
         } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyBuffer);
+          // ===================================================================
+          // THE FINAL FIX: Using the new, better library for Brotli
+          // ===================================================================
+          decompressedBuffer = decompress(bodyBuffer);
         }
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
@@ -69,7 +69,6 @@ export default async function handler(request, response) {
     }
 
     const result = {
-      // Return the final URL so the user knows what was tested
       url: finalUrl,
       status: fetchResponse.status,
       isCompressed: !!contentEncoding,
