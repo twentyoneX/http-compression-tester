@@ -1,112 +1,76 @@
 // /api/check.js
 
-// Using ONLY built-in Node.js modules for maximum stability.
-import zlib from 'zlib';
-import { promisify } from 'util';
+import axios from 'axios';
+import { brotliDecompress, gunzip, inflate } from 'zlib/promises';
 
-const gunzip = promisify(zlib.gunzip);
-const inflate = promisify(zlib.inflate);
-const brotliDecompress = promisify(zlib.brotliDecompress);
+export default async function handler(req, res) {
+  console.log('▶️ Handler started');
 
-export default async function handler(request, response) {
-  // Always set CORS headers first to guarantee they are always sent.
-  response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (request.method === 'OPTIONS') {
-    return response.status(200).end();
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const urlParam = req.query.url;
+  console.log('URL param:', urlParam);
+  if (!urlParam) {
+    return res.status(400).json({ error: 'URL parameter is required.' });
   }
 
-  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
+  let targetUrl;
   try {
-    const { url } = request.query;
-    if (!url) {
-      return response.status(400).json({ error: 'URL parameter is required.' });
-    }
+    targetUrl = new URL(urlParam.startsWith('http') ? urlParam : `http://${urlParam}`).toString();
+    console.log('Resolved URL:', targetUrl);
+  } catch (err) {
+    console.error('Invalid URL:', err.message);
+    return res.status(400).json({ error: 'Invalid URL provided.' });
+  }
 
-    let targetUrl;
-    try {
-      targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch (e) {
-      return response.status(400).json({ error: 'Invalid URL provided.' });
-    }
-
-    // CRITICAL TIMEOUT HANDLING: Prevents Vercel from killing the function.
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
-
-    const fetchResponse = await fetch(targetUrl, {
-      signal: controller.signal, // Pass the abort signal to fetch
+  try {
+    const response = await axios.get(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept-Encoding': 'gzip, deflate, br',
+        'User-Agent': 'Compression-Checker'
       },
-      redirect: 'follow',
+      timeout: 10000,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: null
     });
+    console.log('Fetched, status:', response.status);
 
-    // If fetch completes, clear the timeout
-    clearTimeout(timeoutId);
-
-    // CRITICAL ERROR HANDLING: Prevents crashes on 4xx/5xx errors.
-    if (!fetchResponse.ok) {
-      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
-      if (fetchResponse.status === 403) {
-        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
-      }
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
-    }
-
-    const finalUrl = fetchResponse.url;
-    const headers = fetchResponse.headers;
-    const contentEncoding = headers.get('content-encoding');
-
-    const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
-    const compressedSize = bodyBuffer.byteLength;
+    const encoding = response.headers['content-encoding'] || '';
+    const compressedSize = response.data.byteLength;
     let uncompressedSize = null;
 
-    if (contentEncoding && compressedSize > 0) {
-      try {
-        let decompressedBuffer;
-        if (contentEncoding.includes('gzip')) {
-          decompressedBuffer = await gunzip(bodyBuffer);
-        } else if (contentEncoding.includes('br')) {
-          decompressedBuffer = await brotliDecompress(bodyBuffer);
-        } else if (contentEncoding.includes('deflate')) {
-          decompressedBuffer = await inflate(bodyBuffer);
-        }
-        if (decompressedBuffer) {
-          uncompressedSize = decompressedBuffer.byteLength;
-        }
-      } catch (decompressionError) {
-        // This is now an expected outcome for some sites. We handle it gracefully.
-        console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
-        uncompressedSize = null;
-      }
-    } else if (compressedSize > 0) {
-      uncompressedSize = compressedSize;
+    try {
+      let buffer;
+      if (encoding.includes('br')) buffer = await brotliDecompress(response.data);
+      else if (encoding.includes('gzip')) buffer = await gunzip(response.data);
+      else if (encoding.includes('deflate')) buffer = await inflate(response.data);
+
+      if (buffer) uncompressedSize = buffer.byteLength;
+      console.log('Decompressed size:', uncompressedSize);
+    } catch (e) {
+      console.warn('Decompression failed:', e.message);
     }
 
-    const result = {
-      url: finalUrl,
-      status: fetchResponse.status,
-      isCompressed: !!contentEncoding,
-      compressionType: contentEncoding || 'None',
-      compressedSize: compressedSize,
-      uncompressedSize: uncompressedSize,
-      headers: Object.fromEntries(headers.entries()),
-    };
+    return res.status(200).json({
+      url: response.request.res.responseUrl || targetUrl,
+      status: response.status,
+      isCompressed: !!encoding,
+      compressionType: encoding || 'None',
+      compressedSize,
+      uncompressedSize,
+      headers: response.headers
+    });
 
-    return response.status(200).json(result);
-
-  } catch (error) {
-    // This outer catch handles low-level network errors AND our timeout.
-    if (error.name === 'AbortError') {
-      console.error("Request timed out.");
-      return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
+  } catch (err) {
+    console.error('Error during fetch:', err.code || err.message);
+    if (err.code === 'ECONNABORTED') {
+      return res.status(504).json({ error: 'Timeout', details: 'Server took too long to respond.' });
     }
-    
-    console.error("A critical network error occurred:", error.message);
-    return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})` });
+    return res.status(500).json({ error: 'Fetch failed', details: err.message });
   }
 }
