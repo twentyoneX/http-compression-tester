@@ -2,18 +2,15 @@ import zlib from 'zlib';
 import { promisify } from 'util';
 import axios from 'axios';
 
-// Promisify the zlib decompression methods
 const gunzip = promisify(zlib.gunzip);
 const inflate = promisify(zlib.inflate);
 const brotliDecompress = promisify(zlib.brotliDecompress);
 
 export default async function handler(request, response) {
-  // Set CORS headers
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle preflight requests
   if (request.method === 'OPTIONS') {
     return response.status(200).end();
   }
@@ -27,6 +24,7 @@ export default async function handler(request, response) {
   try {
     targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
   } catch (error) {
+    console.error('URL Parsing Error:', error.message);
     return response.status(400).json({ error: 'Invalid URL provided.' });
   }
 
@@ -79,13 +77,14 @@ export default async function handler(request, response) {
 
     return response.status(200).json(result);
   } catch (error) {
+    console.error('Error during fetch:', error.message);
     if (error.response) {
       console.error("Axios Error Response:", error.response.status);
       let errorDetail = `The server responded with an error: ${error.response.status}.`;
       if (error.response.status === 403) {
         errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service that is blocking our tool.';
       }
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
+      return response.status(error.response.status).json({ error: 'Failed to access the page.', details: errorDetail });
     } else if (error.request) {
       console.error("Axios No Response Error:", error.message);
       return response.status(500).json({ error: 'Network Error', details: 'Could not connect to the server. The site may be offline or unreachable.' });
