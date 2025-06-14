@@ -25,7 +25,7 @@ export default async function handler(request, response) {
     let targetUrl;
     try {
       targetUrl = new URL(url.startsWith('http') ? url : `http://${url}`).toString();
-    } catch (e) {
+    } catch {
       return response.status(400).json({ error: 'Invalid URL provided.' });
     }
 
@@ -35,7 +35,7 @@ export default async function handler(request, response) {
     const fetchResponse = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0',
         'Accept-Encoding': 'gzip, deflate, br',
       },
       redirect: 'follow',
@@ -44,18 +44,25 @@ export default async function handler(request, response) {
     clearTimeout(timeoutId);
 
     if (!fetchResponse.ok) {
-      let errorDetail = `The server responded with status: ${fetchResponse.status}.`;
-      if (fetchResponse.status === 403) {
-        errorDetail = 'Access Denied (403 Forbidden). The website is likely protected by a security service.';
-      }
-      return response.status(400).json({ error: 'Failed to access the page.', details: errorDetail });
+      return response.status(400).json({
+        error: 'Failed to access the page.',
+        details: `The server responded with status: ${fetchResponse.status}.`,
+      });
     }
 
-    const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
+    const contentLengthHeader = headers.get('content-length');
+    const finalUrl = fetchResponse.url;
+
     const bodyBuffer = Buffer.from(await fetchResponse.arrayBuffer());
-    const compressedSize = bodyBuffer.byteLength;
+    let compressedSize = bodyBuffer.byteLength;
+    if (contentLengthHeader && !isNaN(contentLengthHeader)) {
+      const parsedLength = parseInt(contentLengthHeader, 10);
+      if (parsedLength > 0 && parsedLength < compressedSize) {
+        compressedSize = parsedLength;
+      }
+    }
 
     let uncompressedSize = null;
     let decompressionSuccess = false;
@@ -63,7 +70,6 @@ export default async function handler(request, response) {
     if (contentEncoding && compressedSize > 0) {
       try {
         let decompressedBuffer;
-
         if (contentEncoding.includes('gzip')) {
           decompressedBuffer = await gunzip(bodyBuffer);
         } else if (contentEncoding.includes('br')) {
@@ -71,49 +77,44 @@ export default async function handler(request, response) {
         } else if (contentEncoding.includes('deflate')) {
           decompressedBuffer = await inflate(bodyBuffer);
         }
-
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
           decompressionSuccess = true;
         }
       } catch (err) {
-        console.error(`Decompression failed for ${contentEncoding}:`, err.message);
+        console.error(`Decompression failed (${contentEncoding}):`, err.message);
+        uncompressedSize = compressedSize;
       }
-    }
-
-    // Fallback: assume uncompressed size = compressed size if no decompression
-    if (!uncompressedSize && compressedSize > 0) {
+    } else {
       uncompressedSize = compressedSize;
     }
 
-    const savingsPercent = uncompressedSize && compressedSize
-      ? parseFloat(((1 - compressedSize / uncompressedSize) * 100).toFixed(1))
-      : 0;
+    const savingsPercent =
+      uncompressedSize && uncompressedSize > compressedSize
+        ? Number(((1 - compressedSize / uncompressedSize) * 100).toFixed(1))
+        : 0.0;
 
     const result = {
       url: finalUrl,
       status: fetchResponse.status,
       isCompressed: !!contentEncoding,
       compressionType: contentEncoding || 'None',
-      compressedSize, // in bytes
-      uncompressedSize, // in bytes
-      savingsPercent, // float percentage
+      compressedSize,
+      uncompressedSize,
+      savingsPercent,
       decompressionSuccess,
       headers: Object.fromEntries(headers.entries()),
     };
 
     return response.status(200).json(result);
-
   } catch (error) {
     if (error.name === 'AbortError') {
-      console.error('Request timed out.');
       return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
     }
 
-    console.error('A critical network error occurred:', error.message);
     return response.status(500).json({
       error: 'A critical network error occurred.',
-      details: `Could not reach the server. This may be a DNS issue or the server is offline. (Error: ${error.cause ? error.cause.code : error.message})`,
+      details: `Could not reach the server. (Error: ${error.cause?.code || error.message})`,
     });
   }
 }
