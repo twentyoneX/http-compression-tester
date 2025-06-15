@@ -1,7 +1,5 @@
 // /api/check.js
 
-// Use the robust, WebAssembly-based libraries for decompression
-// with the CORRECT package names and CORRECT 'default export' import syntax.
 import brotliDecompress from '@jsquash/brotli';
 import gzipDecompress from '@jsquash/gzip';
 
@@ -15,12 +13,9 @@ export default async function handler(request, response) {
     return response.status(200).end();
   }
 
-  // Wrap the entire logic in a try/catch to handle any unexpected crashes.
   try {
     const { url } = request.query;
-    if (!url) {
-      return response.status(400).json({ error: 'URL parameter is required.' });
-    }
+    if (!url) { return response.status(400).json({ error: 'URL parameter is required.' }); }
 
     let targetUrl;
     try {
@@ -30,7 +25,7 @@ export default async function handler(request, response) {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const fetchResponse = await fetch(targetUrl, {
       signal: controller.signal,
@@ -54,10 +49,12 @@ export default async function handler(request, response) {
     const finalUrl = fetchResponse.url;
     const headers = fetchResponse.headers;
     const contentEncoding = headers.get('content-encoding');
+    const contentLength = headers.get('content-length');
 
     const bodyBuffer = await fetchResponse.arrayBuffer();
     const compressedSize = bodyBuffer.byteLength;
     let uncompressedSize = null;
+    let isActuallyCompressed = !!contentEncoding;
 
     if (contentEncoding && compressedSize > 0) {
       try {
@@ -72,6 +69,12 @@ export default async function handler(request, response) {
         
         if (decompressedBuffer) {
           uncompressedSize = decompressedBuffer.byteLength;
+          // --- THE FINAL FIX ---
+          // Check for misconfigured servers. If the uncompressed size is the same
+          // as the actual bytes received, it wasn't really compressed.
+          if (uncompressedSize === compressedSize) {
+            isActuallyCompressed = false;
+          }
         }
       } catch (decompressionError) {
         console.error(`Decompression failed for ${contentEncoding}:`, decompressionError.message);
@@ -84,8 +87,8 @@ export default async function handler(request, response) {
     const result = {
       url: finalUrl,
       status: fetchResponse.status,
-      isCompressed: !!contentEncoding,
-      compressionType: contentEncoding || 'None',
+      isCompressed: isActuallyCompressed, // Use our intelligent check
+      compressionType: isActuallyCompressed ? contentEncoding : 'None',
       compressedSize: compressedSize,
       uncompressedSize: uncompressedSize,
       headers: Object.fromEntries(headers.entries()),
@@ -95,11 +98,8 @@ export default async function handler(request, response) {
 
   } catch (error) {
     if (error.name === 'AbortError') {
-      console.error("Request timed out.");
       return response.status(500).json({ error: 'Request Timeout', details: 'The server took too long to respond.' });
     }
-    
-    console.error("A critical network error occurred:", error.message);
     return response.status(500).json({ error: 'A critical network error occurred.', details: `Could not reach the server. (Error: ${error.cause ? error.cause.code : error.message})` });
   }
 }
