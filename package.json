@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@jsquash/brotli": "^2.1.0",
-    "@jsquash/gzip": "^2.1.0"
+    "axios": "^1.7.2",
+    "iltorb": "^2.4.5"
   }
 }
